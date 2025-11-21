@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import { DivIcon } from 'leaflet';
@@ -9,6 +8,27 @@ import L from 'leaflet';
 import 'leaflet-routing-machine';
 
 // --- Components ---
+
+// 0. Helper to fix map resizing issues (Grey tiles/Half map)
+const MapResizeHandler: React.FC = () => {
+  const map = useMap();
+
+  useEffect(() => {
+    const resizeObserver = new ResizeObserver(() => {
+      // Tell Leaflet the container size has changed so it updates tiles
+      map.invalidateSize();
+    });
+
+    const container = map.getContainer();
+    resizeObserver.observe(container);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [map]);
+
+  return null;
+};
 
 // 1. Helper to move map programmatically
 const MapController: React.FC<{ center?: [number, number] | null }> = ({ center }) => {
@@ -181,402 +201,462 @@ const RoutingMachine: React.FC<RoutingProps> = ({ start, end, stations, onRouteF
   useEffect(() => {
     if (!map) return;
 
+    // --- DYNAMIC FIX FOR "L is not defined" or "L.Routing not found" ---
+    // In some environments, import L from 'leaflet' (module) is different from window.L (script tag).
+    // The script tag has Routing, the module does not. We must patch it here or use window.L directly.
+    const globalL = (window as any).L;
+    
+    // Check if global L routing is available (from script tags)
+    if (!globalL || !globalL.Routing) {
+       // If imported via npm/import 'leaflet-routing-machine', it might be on the imported L but not global.
+       // Let's check the imported L.
+       if (!L || !L.Routing) {
+          console.error("Leaflet Routing Machine not found. Make sure the script is loaded in index.html");
+          return;
+       }
+    }
+
+    // Ensure the imported L has Routing attached if we use it anywhere
+    if (L && !L.Routing && globalL && globalL.Routing) {
+       L.Routing = globalL.Routing;
+    }
+    
+    // Prefer the L that definitely has Routing
+    const Routing = L.Routing || globalL.Routing;
+
     if (!dangerLayerRef.current) {
-      dangerLayerRef.current = L.layerGroup().addTo(map);
+      try {
+        dangerLayerRef.current = L.layerGroup().addTo(map);
+      } catch (e) {
+        console.warn("Failed to create danger layer group", e);
+      }
     }
 
     if (!controlRef.current) {
-      const control = L.Routing.control({
-        waypoints: [
-          L.latLng(start[0], start[1]),
-          L.latLng(end[0], end[1])
-        ],
-        lineOptions: {
-          styles: [{ color: '#3b82f6', opacity: 0.8, weight: 6 }],
-          extendToWaypoints: false,
-          missingRouteTolerance: 0
-        },
-        show: false,
-        addWaypoints: false,
-        draggableWaypoints: false,
-        fitSelectedRoutes: true,
-        createMarker: () => null
-      } as any);
-
-      // EVENT: Routes Found
-      control.on('routesfound', async function(e: any) {
-        const { stations, avoidFloodMode, vehicleType, onRouteFound, start, end } = propsRef.current;
-        const route = e.routes[0];
-        const coordinates = route.coordinates;
-
-        if (!coordinates || coordinates.length === 0) return;
-
-        // 1. Analyze Danger
-        const detectedDangerSegments = detectFloodRisks(coordinates, stations, vehicleType);
-
-        // 2. Visualize Danger (Always visualize, whether base or detour)
-        if (dangerLayerRef.current) {
-            dangerLayerRef.current.clearLayers();
-            detectedDangerSegments.forEach(seg => {
-                const segCoords = coordinates.slice(seg.startIndex, seg.endIndex + 1);
-                if (segCoords.length > 1 && dangerLayerRef.current) {
-                    L.polyline(segCoords, { color: '#ef4444', weight: 7 }).addTo(dangerLayerRef.current);
-                }
-            });
-        }
-
-        // 3. Report Status to UI
-        const affectedNames = [...new Set(detectedDangerSegments.map(s => s.causingStation.name))];
-        let summaryText = route.name;
-        
-        // If we failed to find a detour and we are in avoid mode with flood, update message
-        if (avoidFloodMode && detectedDangerSegments.length > 0 && detourFailedRef.current) {
-             summaryText = "No safe detour found. Showing original route.";
-        }
-
-        onRouteFound({
-            distance: route.summary.totalDistance,
-            duration: route.summary.totalTime,
-            summary: summaryText,
-            isFlooded: detectedDangerSegments.length > 0,
-            affectedStations: affectedNames
+      try {
+        const control = Routing.control({
+          waypoints: [
+            L.latLng(start[0], start[1]),
+            L.latLng(end[0], end[1])
+          ],
+          lineOptions: {
+            styles: [{ color: '#3b82f6', opacity: 0.8, weight: 6 }],
+            extendToWaypoints: false,
+            missingRouteTolerance: 0
+          },
+          show: false,
+          addWaypoints: false,
+          draggableWaypoints: false,
+          fitSelectedRoutes: true,
+          createMarker: () => null
         });
 
-        // 4. Detour Logic
-        // Conditions: Mode ON, Danger Exists, Not already detouring, Not failed previously, Not analyzing
-        if (avoidFloodMode && detectedDangerSegments.length > 0 && !detourAppliedRef.current && !detourFailedRef.current && !isAnalyzingRef.current) {
-            isAnalyzingRef.current = true;
-            console.log("Flood detected. Initiating smart detour search...");
+        // EVENT: Routes Found
+        control.on('routesfound', async function(e: any) {
+          const { stations, avoidFloodMode, vehicleType, onRouteFound, start, end } = propsRef.current;
+          const route = e.routes[0];
+          const coordinates = route.coordinates;
 
-            try {
-                const router = control.getRouter();
-                if (!router) {
-                    console.warn("Router not available");
+          if (!coordinates || coordinates.length === 0) return;
+
+          // 1. Analyze Danger
+          const detectedDangerSegments = detectFloodRisks(coordinates, stations, vehicleType);
+          let isFlooded = detectedDangerSegments.length > 0;
+          let isDetour = false;
+
+          // 2. Visualize Danger (Initial draw)
+          if (dangerLayerRef.current) {
+              try {
+                  dangerLayerRef.current.clearLayers();
+                  detectedDangerSegments.forEach(seg => {
+                      const segCoords = coordinates.slice(seg.startIndex, seg.endIndex + 1);
+                      if (segCoords.length > 1 && dangerLayerRef.current) {
+                          L.polyline(segCoords, { color: '#ef4444', weight: 7 }).addTo(dangerLayerRef.current);
+                      }
+                  });
+              } catch (err) {
+                  console.warn("Error updating danger layers:", err);
+              }
+          }
+
+          // 3. Report Status to UI
+          let affectedNames = [...new Set(detectedDangerSegments.map(s => s.causingStation.name))];
+          let summaryText = route.name;
+          
+          // --- FIX: Override status if a safe detour was successfully applied ---
+          if (avoidFloodMode && detourAppliedRef.current) {
+              isFlooded = false;
+              isDetour = true;
+              summaryText = "Safe Detour Applied";
+              affectedNames = []; 
+              
+              // Remove red danger lines from map since we consider this safe
+              if (dangerLayerRef.current) {
+                  try {
+                      dangerLayerRef.current.clearLayers();
+                  } catch (err) {
+                      console.warn("Error clearing danger layers:", err);
+                  }
+              }
+          }
+          
+          // If we failed to find a detour and we are in avoid mode with flood, update message
+          if (avoidFloodMode && isFlooded && detourFailedRef.current) {
+              summaryText = "No safe detour found. Showing original route.";
+          }
+
+          onRouteFound({
+              distance: route.summary.totalDistance,
+              duration: route.summary.totalTime,
+              summary: summaryText,
+              isFlooded: isFlooded,
+              isDetour: isDetour,
+              affectedStations: affectedNames
+          });
+
+          // 4. Detour Logic
+          // Conditions: Mode ON, Danger Exists (and we haven't overridden it as safe yet/haven't applied detour), Not already detouring, Not failed previously, Not analyzing
+          if (avoidFloodMode && detectedDangerSegments.length > 0 && !detourAppliedRef.current && !detourFailedRef.current && !isAnalyzingRef.current) {
+              isAnalyzingRef.current = true;
+              console.log("Flood detected. Initiating smart detour search...");
+
+              try {
+                  const router = control.getRouter();
+                  if (!router) {
+                      console.warn("Router not available");
+                      isAnalyzingRef.current = false;
+                      return;
+                  }
+
+                  const segment = detectedDangerSegments[0]; // Fix the first major flood
+                  
+                  // Defensive check for segment
+                  if (!segment || !segment.causingStation) {
+                      console.warn("Invalid flood segment detected");
+                      isAnalyzingRef.current = false;
+                      return;
+                  }
+
+                  // Safe Anchors (P_start, P_end)
+                  const BUFFER = 5; // small buffer indices
+                  const idxStart = Math.max(0, segment.startIndex - BUFFER);
+                  const idxEnd = Math.min(coordinates.length - 1, segment.endIndex + BUFFER);
+                  
+                  // Defensive check: index bounds
+                  if (idxStart >= coordinates.length || idxEnd < 0 || idxStart > idxEnd) {
+                      console.warn("Could not find valid anchors for detour. Indices:", idxStart, idxEnd);
+                      isAnalyzingRef.current = false;
+                      return;
+                  }
+
+                  // --- NEW: Lấy toạ độ thô & kiểm tra kỹ trước khi dùng .lng/.lat ---
+                  const rawStart = coordinates[idxStart];
+                  const rawEnd = coordinates[idxEnd];
+
+                  if (!rawStart || !rawEnd) {
+                      console.warn("Anchor coordinates are undefined:", rawStart, rawEnd);
+                      isAnalyzingRef.current = false;
+                      return;
+                  }
+
+                  // Hỗ trợ cả 2 dạng: [lat, lng] hoặc { lat, lng }
+                  const sLat = Array.isArray(rawStart) ? rawStart[0] : rawStart.lat;
+                  const sLng = Array.isArray(rawStart) ? rawStart[1] : rawStart.lng;
+                  const eLat = Array.isArray(rawEnd) ? rawEnd[0] : rawEnd.lat;
+                  const eLng = Array.isArray(rawEnd) ? rawEnd[1] : rawEnd.lng;
+
+                  // Nếu thiếu lat/lng hợp lệ → bỏ detour
+                  if (
+                    typeof sLat !== "number" ||
+                    typeof sLng !== "number" ||
+                    typeof eLat !== "number" ||
+                    typeof eLng !== "number"
+                  ) {
+                    console.warn("Invalid anchor coordinate values:", rawStart, rawEnd);
                     isAnalyzingRef.current = false;
                     return;
-                }
+                  }
 
-                const segment = detectedDangerSegments[0]; // Fix the first major flood
-                
-                // Defensive check for segment
-                if (!segment || !segment.causingStation) {
-                    console.warn("Invalid flood segment detected");
+                  const pStart = L.latLng(sLat, sLng);
+                  const pEnd = L.latLng(eLat, eLng);
+                  const startLatLng = L.latLng(start[0], start[1]);
+                  const endLatLng = L.latLng(end[0], end[1]);
+
+                  // --- Đảm bảo anchors hợp lệ trước khi dùng ---
+                  if (!pStart || !pEnd) {
+                    console.warn("L.latLng failed to create anchors for detour.");
                     isAnalyzingRef.current = false;
                     return;
-                }
+                  }
 
-                // Safe Anchors (P_start, P_end)
-                const BUFFER = 5; // small buffer indices
-                const idxStart = Math.max(0, segment.startIndex - BUFFER);
-                const idxEnd = Math.min(coordinates.length - 1, segment.endIndex + BUFFER);
-                
-                // Defensive check: index bounds
-                if (idxStart >= coordinates.length || idxEnd < 0 || idxStart > idxEnd) {
-                    console.warn("Could not find valid anchors for detour. Indices:", idxStart, idxEnd);
-                    isAnalyzingRef.current = false;
-                    return;
-                }
+                  const baseMetrics = calculateRouteScore(route, stations, vehicleType);
 
-                // --- NEW: Lấy toạ độ thô & kiểm tra kỹ trước khi dùng .lng/.lat ---
-                const rawStart = coordinates[idxStart];
-                const rawEnd = coordinates[idxEnd];
+                  // --- Strategy A: Smart Midpoint Offset ---
+                  const midLat = (pStart.lat + pEnd.lat) / 2;
+                  const midLng = (pStart.lng + pEnd.lng) / 2;
+                  const vecLat = pEnd.lat - pStart.lat;
+                  const vecLng = pEnd.lng - pStart.lng;
+                  
+                  let segLen = Math.sqrt(vecLat * vecLat + vecLng * vecLng);
+                  if (!isFinite(segLen) || segLen === 0) {
+                      console.warn("Zero-length segment for detour, skipping.");
+                      isAnalyzingRef.current = false;
+                      return;
+                  }
 
-                if (!rawStart || !rawEnd) {
-                    console.warn("Anchor coordinates are undefined:", rawStart, rawEnd);
-                    isAnalyzingRef.current = false;
-                    return;
-                }
+                  const nLat = -vecLng / segLen; // Perpendicular
+                  const nLng = vecLat / segLen;
 
-                // Hỗ trợ cả 2 dạng: [lat, lng] hoặc { lat, lng }
-                const sLat = Array.isArray(rawStart) ? rawStart[0] : rawStart.lat;
-                const sLng = Array.isArray(rawStart) ? rawStart[1] : rawStart.lng;
-                const eLat = Array.isArray(rawEnd) ? rawEnd[0] : rawEnd.lat;
-                const eLng = Array.isArray(rawEnd) ? rawEnd[1] : rawEnd.lng;
+                  const offsets = [
+                      0.002, -0.002, // ~220m
+                      0.004, -0.004, // ~440m
+                      0.006, -0.006  // ~660m
+                  ];
 
-                // Nếu thiếu lat/lng hợp lệ → bỏ detour
-                if (
-                  typeof sLat !== "number" ||
-                  typeof sLng !== "number" ||
-                  typeof eLat !== "number" ||
-                  typeof eLng !== "number"
-                ) {
-                  console.warn("Invalid anchor coordinate values:", rawStart, rawEnd);
+                  const candidates = offsets.map(offset => {
+                      return L.latLng(midLat + nLat * offset, midLng + nLng * offset);
+                  });
+
+                  // --- Strategy B: Fallback (Perpendicular Push from Closest Point) ---
+                  // Find point in segment closest to station
+                  let closestIdx = -1;
+                  let minStationDist = Infinity;
+                  
+                  // Defensive: ensure causingStation has valid lat/lng
+                  if (typeof segment.causingStation.lat === 'number' && typeof segment.causingStation.lng === 'number') {
+                      const stationLoc = L.latLng(segment.causingStation.lat, segment.causingStation.lng);
+                      
+                      for(let i = segment.startIndex; i <= segment.endIndex; i++) {
+                          if (!coordinates[i]) continue;
+                          try {
+                              const pt = L.latLng(coordinates[i]);
+                              const d = pt.distanceTo(stationLoc);
+                              if(d < minStationDist) {
+                                  minStationDist = d;
+                                  closestIdx = i;
+                              }
+                          } catch(e) { continue; }
+                      }
+                      
+                      if (closestIdx !== -1 && coordinates[closestIdx]) {
+                          try {
+                              const cCurrRaw = coordinates[closestIdx];
+                              const cCurr = L.latLng(cCurrRaw);
+                              if (!cCurr) throw new Error("Invalid current point");
+                              
+                              // Estimate direction (tangent)
+                              const iPrev = Math.max(0, closestIdx - 1);
+                              const iNext = Math.min(coordinates.length - 1, closestIdx + 1);
+                              
+                              // Robust neighbor access
+                              let cPrev = cCurr;
+                              if (coordinates[iPrev]) {
+                                  try { 
+                                      const p = L.latLng(coordinates[iPrev]); 
+                                      if (p) cPrev = p;
+                                  } catch (e) {}
+                              }
+
+                              let cNext = cCurr;
+                              if (coordinates[iNext]) {
+                                  try { 
+                                      const n = L.latLng(coordinates[iNext]); 
+                                      if (n) cNext = n;
+                                  } catch (e) {}
+                              }
+                              
+                              // Vector along route
+                              let dirLat = 0; 
+                              let dirLng = 0;
+
+                              if (cNext && cPrev) {
+                                  dirLat = cNext.lat - cPrev.lat;
+                                  dirLng = cNext.lng - cPrev.lng;
+                              }
+                              
+                              let len = Math.sqrt(dirLat*dirLat + dirLng*dirLng);
+                              
+                              // If very small length, try one-sided
+                              if (len < 1e-9 && cNext) {
+                                  dirLat = cNext.lat - cCurr.lat;
+                                  dirLng = cNext.lng - cCurr.lng;
+                                  len = Math.sqrt(dirLat*dirLat + dirLng*dirLng);
+                              }
+
+                              let perpLat = 0;
+                              let perpLng = 0;
+
+                              if (len > 1e-9) {
+                                  // Normalize direction
+                                  dirLat /= len;
+                                  dirLng /= len;
+                                  
+                                  // Two perpendiculars: (-y, x) and (y, -x)
+                                  const p1Lat = -dirLng;
+                                  const p1Lng = dirLat;
+                                  const p2Lat = dirLng;
+                                  const p2Lng = -dirLat;
+                                  
+                                  // Vector Station -> Point
+                                  const sToPLat = cCurr.lat - stationLoc.lat;
+                                  const sToPLng = cCurr.lng - stationLoc.lng;
+                                  
+                                  // Use dot product to choose perpendicular moving AWAY from station
+                                  const dot1 = p1Lat * sToPLat + p1Lng * sToPLng;
+                                  
+                                  if (dot1 >= 0) {
+                                      perpLat = p1Lat;
+                                      perpLng = p1Lng;
+                                  } else {
+                                      perpLat = p2Lat;
+                                      perpLng = p2Lng;
+                                  }
+                              } else {
+                                  // Fallback: just push away radially
+                                  const sToPLat = cCurr.lat - stationLoc.lat;
+                                  const sToPLng = cCurr.lng - stationLoc.lng;
+                                  const sLen = Math.sqrt(sToPLat*sToPLat + sToPLng*sToPLng) || 1;
+                                  perpLat = sToPLat / sLen;
+                                  perpLng = sToPLng / sLen;
+                              }
+                              
+                              const FALLBACK_DIST = 0.006; // ~600-700m
+                              const fallbackPoint = L.latLng(
+                                  cCurr.lat + perpLat * FALLBACK_DIST,
+                                  cCurr.lng + perpLng * FALLBACK_DIST
+                              );
+                              
+                              candidates.push(fallbackPoint);
+                          } catch(e) {
+                              console.warn("Fallback vector calc failed", e);
+                          }
+                      }
+                  }
+
+                  // --- Evaluate All Candidates ---
+                  const promises = candidates.map(async (detourPoint) => {
+                      if (!detourPoint) return null;
+                      
+                      // Collect LatLng points for the route
+                      const points = [startLatLng];
+                      // Use anchors to force local detour
+                      if (startLatLng.distanceTo(pStart) > 200) points.push(pStart);
+                      points.push(detourPoint);
+                      if (endLatLng.distanceTo(pEnd) > 200) points.push(pEnd);
+                      points.push(endLatLng);
+
+                      // router.route expects Waypoint objects { latLng: ... } not LatLng objects
+                      const routeWaypoints = points.map(p => ({ latLng: p }));
+
+                      return new Promise<{waypoints: any[], route: any} | null>(resolve => {
+                          // @ts-ignore
+                          router.route(routeWaypoints, (err: any, routes: any[]) => {
+                              if (!err && routes && routes.length > 0 && routes[0] && routes[0].coordinates) {
+                                  // We resolve with the points used (LatLng[]) as that's what setWaypoints consumes later
+                                  resolve({ waypoints: points, route: routes[0] });
+                              } else {
+                                  resolve(null);
+                              }
+                          });
+                      });
+                  });
+
+                  const results = await Promise.all(promises);
+                  
+                  let bestCandidate: {waypoints: any[], route: any} | null = null;
+                  let bestScore = Infinity;
+
+                  // Track best exposure for fallback
+                  let bestExposure = Infinity;
+                  let bestExposureCandidate: {waypoints: any[], route: any} | null = null;
+
+                  for (const res of results) {
+                      if (!res) continue;
+
+                      const metrics = calculateRouteScore(res.route, stations, vehicleType);
+                      
+                      // Acceptance Logic:
+                      // 1. Must reduce flood exposure significantly OR be completely clear
+                      // 2. Distance penalty shouldn't be insane unless flood is totally avoided
+                      
+                      const isFloodFree = metrics.exposure < 50; // Tolerable small exposure
+                      const distIncrease = (metrics.distance - baseMetrics.distance) / (baseMetrics.distance || 1);
+                      const floodReduction = baseMetrics.exposure - metrics.exposure;
+
+                      // Save candidate with lowest exposure for fallback
+                      if (metrics.exposure < bestExposure) {
+                          bestExposure = metrics.exposure;
+                          bestExposureCandidate = res;
+                      }
+                      
+                      let isAcceptable = false;
+
+                      if (isFloodFree) {
+                          // If it clears the flood, we accept up to 70% more distance (Relaxed from 0.5)
+                          if (distIncrease < 0.7) isAcceptable = true;
+                      } else {
+                          // If it doesn't clear flood, it must reduce it significantly (>30% reduction)
+                          // AND not add too much distance (<40%)
+                          if (floodReduction > baseMetrics.exposure * 0.3 && distIncrease < 0.4) {
+                              isAcceptable = true;
+                          }
+                      }
+
+                      // Always prefer score (which weights flood heavily)
+                      if (isAcceptable && metrics.score < bestScore) {
+                          bestScore = metrics.score;
+                          bestCandidate = res;
+                      }
+                  }
+
+                  // If no "acceptable" smart candidate, use route with lowest exposure (best effort)
+                  if (!bestCandidate && bestExposureCandidate) {
+                      console.log("Using best-exposure fallback detour.");
+                      bestCandidate = bestExposureCandidate;
+                  }
+
+                  // Apply Decision
+                  if (bestCandidate) {
+                      console.log(`Detour Applied. flood=${calculateRouteScore(bestCandidate.route, stations, vehicleType).exposure}`);
+                      detourAppliedRef.current = true; 
+                      // Break call stack
+                      setTimeout(() => {
+                          if (controlRef.current) {
+                              try {
+                                controlRef.current.setWaypoints(bestCandidate!.waypoints);
+                              } catch (err) {
+                                console.warn("Error setting waypoints:", err);
+                              }
+                          }
+                      }, 0);
+                  } else {
+                      console.log("No viable detour found.");
+                      detourFailedRef.current = true;
+                      // Trigger UI update for message
+                      onRouteFound({
+                          distance: route.summary.totalDistance,
+                          duration: route.summary.totalTime,
+                          summary: "No safe detour found. Showing original route.",
+                          isFlooded: true,
+                          isDetour: false,
+                          affectedStations: affectedNames
+                      });
+                  }
+
+              } catch (err) {
+                  console.error("Error calculating detour:", err);
+                  detourFailedRef.current = true;
+              } finally {
                   isAnalyzingRef.current = false;
-                  return;
-                }
+              }
+          }
+        });
 
-                const pStart = L.latLng(sLat, sLng);
-                const pEnd = L.latLng(eLat, eLng);
-                const startLatLng = L.latLng(start[0], start[1]);
-                const endLatLng = L.latLng(end[0], end[1]);
-
-                // --- Đảm bảo anchors hợp lệ trước khi dùng ---
-                if (!pStart || !pEnd) {
-                  console.warn("L.latLng failed to create anchors for detour.");
-                  isAnalyzingRef.current = false;
-                  return;
-                }
-
-                const baseMetrics = calculateRouteScore(route, stations, vehicleType);
-
-                // --- Strategy A: Smart Midpoint Offset ---
-                const midLat = (pStart.lat + pEnd.lat) / 2;
-                const midLng = (pStart.lng + pEnd.lng) / 2;
-                const vecLat = pEnd.lat - pStart.lat;
-                const vecLng = pEnd.lng - pStart.lng;
-                
-                let segLen = Math.sqrt(vecLat * vecLat + vecLng * vecLng);
-                if (!isFinite(segLen) || segLen === 0) {
-                    console.warn("Zero-length segment for detour, skipping.");
-                    isAnalyzingRef.current = false;
-                    return;
-                }
-
-                const nLat = -vecLng / segLen; // Perpendicular
-                const nLng = vecLat / segLen;
-
-                const offsets = [
-                    0.002, -0.002, // ~220m
-                    0.004, -0.004, // ~440m
-                    0.006, -0.006  // ~660m
-                ];
-
-                const candidates = offsets.map(offset => {
-                    return L.latLng(midLat + nLat * offset, midLng + nLng * offset);
-                });
-
-                // --- Strategy B: Fallback (Perpendicular Push from Closest Point) ---
-                // Find point in segment closest to station
-                let closestIdx = -1;
-                let minStationDist = Infinity;
-                
-                // Defensive: ensure causingStation has valid lat/lng
-                if (typeof segment.causingStation.lat === 'number' && typeof segment.causingStation.lng === 'number') {
-                    const stationLoc = L.latLng(segment.causingStation.lat, segment.causingStation.lng);
-                    
-                    for(let i = segment.startIndex; i <= segment.endIndex; i++) {
-                        if (!coordinates[i]) continue;
-                        try {
-                            const pt = L.latLng(coordinates[i]);
-                            const d = pt.distanceTo(stationLoc);
-                            if(d < minStationDist) {
-                                minStationDist = d;
-                                closestIdx = i;
-                            }
-                        } catch(e) { continue; }
-                    }
-                    
-                    if (closestIdx !== -1 && coordinates[closestIdx]) {
-                        try {
-                            const cCurrRaw = coordinates[closestIdx];
-                            const cCurr = L.latLng(cCurrRaw);
-                            if (!cCurr) throw new Error("Invalid current point");
-                            
-                            // Estimate direction (tangent)
-                            const iPrev = Math.max(0, closestIdx - 1);
-                            const iNext = Math.min(coordinates.length - 1, closestIdx + 1);
-                            
-                            // Robust neighbor access
-                            let cPrev = cCurr;
-                            if (coordinates[iPrev]) {
-                                try { 
-                                    const p = L.latLng(coordinates[iPrev]); 
-                                    if (p) cPrev = p;
-                                } catch (e) {}
-                            }
-
-                            let cNext = cCurr;
-                            if (coordinates[iNext]) {
-                                try { 
-                                    const n = L.latLng(coordinates[iNext]); 
-                                    if (n) cNext = n;
-                                } catch (e) {}
-                            }
-                            
-                            // Vector along route
-                            let dirLat = 0; 
-                            let dirLng = 0;
-
-                            if (cNext && cPrev) {
-                                dirLat = cNext.lat - cPrev.lat;
-                                dirLng = cNext.lng - cPrev.lng;
-                            }
-                            
-                            let len = Math.sqrt(dirLat*dirLat + dirLng*dirLng);
-                            
-                            // If very small length, try one-sided
-                            if (len < 1e-9 && cNext) {
-                                dirLat = cNext.lat - cCurr.lat;
-                                dirLng = cNext.lng - cCurr.lng;
-                                len = Math.sqrt(dirLat*dirLat + dirLng*dirLng);
-                            }
-
-                            let perpLat = 0;
-                            let perpLng = 0;
-
-                            if (len > 1e-9) {
-                                // Normalize direction
-                                dirLat /= len;
-                                dirLng /= len;
-                                
-                                // Two perpendiculars: (-y, x) and (y, -x)
-                                const p1Lat = -dirLng;
-                                const p1Lng = dirLat;
-                                const p2Lat = dirLng;
-                                const p2Lng = -dirLat;
-                                
-                                // Vector Station -> Point
-                                const sToPLat = cCurr.lat - stationLoc.lat;
-                                const sToPLng = cCurr.lng - stationLoc.lng;
-                                
-                                // Use dot product to choose perpendicular moving AWAY from station
-                                const dot1 = p1Lat * sToPLat + p1Lng * sToPLng;
-                                
-                                if (dot1 >= 0) {
-                                    perpLat = p1Lat;
-                                    perpLng = p1Lng;
-                                } else {
-                                    perpLat = p2Lat;
-                                    perpLng = p2Lng;
-                                }
-                            } else {
-                                // Fallback: just push away radially
-                                const sToPLat = cCurr.lat - stationLoc.lat;
-                                const sToPLng = cCurr.lng - stationLoc.lng;
-                                const sLen = Math.sqrt(sToPLat*sToPLat + sToPLng*sToPLng) || 1;
-                                perpLat = sToPLat / sLen;
-                                perpLng = sToPLng / sLen;
-                            }
-                            
-                            const FALLBACK_DIST = 0.006; // ~600-700m
-                            const fallbackPoint = L.latLng(
-                                cCurr.lat + perpLat * FALLBACK_DIST,
-                                cCurr.lng + perpLng * FALLBACK_DIST
-                            );
-                            
-                            candidates.push(fallbackPoint);
-                        } catch(e) {
-                            console.warn("Fallback vector calc failed", e);
-                        }
-                    }
-                }
-
-                // --- Evaluate All Candidates ---
-                const promises = candidates.map(async (detourPoint) => {
-                    if (!detourPoint) return null;
-                    
-                    // Collect LatLng points for the route
-                    const points = [startLatLng];
-                    // Use anchors to force local detour
-                    if (startLatLng.distanceTo(pStart) > 200) points.push(pStart);
-                    points.push(detourPoint);
-                    if (endLatLng.distanceTo(pEnd) > 200) points.push(pEnd);
-                    points.push(endLatLng);
-
-                    // router.route expects Waypoint objects { latLng: ... } not LatLng objects
-                    const routeWaypoints = points.map(p => ({ latLng: p }));
-
-                    return new Promise<{waypoints: any[], route: any} | null>(resolve => {
-                        // @ts-ignore
-                        router.route(routeWaypoints, (err: any, routes: any[]) => {
-                            if (!err && routes && routes.length > 0 && routes[0] && routes[0].coordinates) {
-                                // We resolve with the points used (LatLng[]) as that's what setWaypoints consumes later
-                                resolve({ waypoints: points, route: routes[0] });
-                            } else {
-                                resolve(null);
-                            }
-                        });
-                    });
-                });
-
-                const results = await Promise.all(promises);
-                
-                let bestCandidate: {waypoints: any[], route: any} | null = null;
-                let bestScore = Infinity;
-
-                // Track best exposure for fallback
-                let bestExposure = Infinity;
-                let bestExposureCandidate: {waypoints: any[], route: any} | null = null;
-
-                for (const res of results) {
-                    if (!res) continue;
-
-                    const metrics = calculateRouteScore(res.route, stations, vehicleType);
-                    
-                    // Acceptance Logic:
-                    // 1. Must reduce flood exposure significantly OR be completely clear
-                    // 2. Distance penalty shouldn't be insane unless flood is totally avoided
-                    
-                    const isFloodFree = metrics.exposure < 50; // Tolerable small exposure
-                    const distIncrease = (metrics.distance - baseMetrics.distance) / (baseMetrics.distance || 1);
-                    const floodReduction = baseMetrics.exposure - metrics.exposure;
-
-                    // Save candidate with lowest exposure for fallback
-                    if (metrics.exposure < bestExposure) {
-                        bestExposure = metrics.exposure;
-                        bestExposureCandidate = res;
-                    }
-                    
-                    let isAcceptable = false;
-
-                    if (isFloodFree) {
-                         // If it clears the flood, we accept up to 70% more distance (Relaxed from 0.5)
-                         if (distIncrease < 0.7) isAcceptable = true;
-                    } else {
-                         // If it doesn't clear flood, it must reduce it significantly (>30% reduction)
-                         // AND not add too much distance (<40%)
-                         if (floodReduction > baseMetrics.exposure * 0.3 && distIncrease < 0.4) {
-                             isAcceptable = true;
-                         }
-                    }
-
-                    // Always prefer score (which weights flood heavily)
-                    if (isAcceptable && metrics.score < bestScore) {
-                        bestScore = metrics.score;
-                        bestCandidate = res;
-                    }
-                }
-
-                // If no "acceptable" smart candidate, use route with lowest exposure (best effort)
-                if (!bestCandidate && bestExposureCandidate) {
-                     console.log("Using best-exposure fallback detour.");
-                     bestCandidate = bestExposureCandidate;
-                }
-
-                // Apply Decision
-                if (bestCandidate) {
-                    console.log(`Detour Applied. flood=${calculateRouteScore(bestCandidate.route, stations, vehicleType).exposure}`);
-                    detourAppliedRef.current = true; 
-                    // Break call stack
-                    setTimeout(() => {
-                        if (controlRef.current) {
-                            controlRef.current.setWaypoints(bestCandidate!.waypoints);
-                        }
-                    }, 0);
-                } else {
-                    console.log("No viable detour found.");
-                    detourFailedRef.current = true;
-                    // Trigger UI update for message
-                    onRouteFound({
-                        distance: route.summary.totalDistance,
-                        duration: route.summary.totalTime,
-                        summary: "No safe detour found. Showing original route.",
-                        isFlooded: true,
-                        affectedStations: affectedNames
-                    });
-                }
-
-            } catch (err) {
-                console.error("Error calculating detour:", err);
-                detourFailedRef.current = true;
-            } finally {
-                isAnalyzingRef.current = false;
-            }
-        }
-      });
-
-      control.addTo(map);
-      controlRef.current = control;
+        control.addTo(map);
+        controlRef.current = control;
+      } catch (e) {
+        console.error("Error creating routing control:", e);
+      }
     }
 
     // Cleanup
@@ -584,6 +664,8 @@ const RoutingMachine: React.FC<RoutingProps> = ({ start, end, stations, onRouteF
       if (map) {
           if (controlRef.current) {
             try {
+                // Prevent listeners from firing during cleanup
+                controlRef.current.off('routesfound');
                 map.removeControl(controlRef.current);
             } catch (e) {
                 console.warn("Error removing routing control:", e);
@@ -592,7 +674,8 @@ const RoutingMachine: React.FC<RoutingProps> = ({ start, end, stations, onRouteF
           }
           if (dangerLayerRef.current) {
             try {
-                if (map.hasLayer(dangerLayerRef.current)) {
+                // Safe layer removal
+                if (map.removeLayer && map.hasLayer && map.hasLayer(dangerLayerRef.current)) {
                     map.removeLayer(dangerLayerRef.current);
                 }
             } catch (e) {
@@ -619,10 +702,14 @@ const RoutingMachine: React.FC<RoutingProps> = ({ start, end, stations, onRouteF
               detourAppliedRef.current = false; 
               detourFailedRef.current = false;
               isAnalyzingRef.current = false;
-              controlRef.current.setWaypoints([
-                  L.latLng(start[0], start[1]),
-                  L.latLng(end[0], end[1])
-              ]);
+              try {
+                controlRef.current.setWaypoints([
+                    L.latLng(start[0], start[1]),
+                    L.latLng(end[0], end[1])
+                ]);
+              } catch (e) {
+                console.warn("Error resetting waypoints:", e);
+              }
           }
       }
   }, [start, end]);
@@ -635,17 +722,25 @@ const RoutingMachine: React.FC<RoutingProps> = ({ start, end, stations, onRouteF
               if (detourAppliedRef.current) {
                   detourAppliedRef.current = false;
                   detourFailedRef.current = false;
-                  controlRef.current.setWaypoints([
-                      L.latLng(start[0], start[1]),
-                      L.latLng(end[0], end[1])
-                  ]);
+                  try {
+                    controlRef.current.setWaypoints([
+                        L.latLng(start[0], start[1]),
+                        L.latLng(end[0], end[1])
+                    ]);
+                  } catch (e) {
+                    console.warn(e);
+                  }
               }
               // Also clear fail state so we can try again if turned back on
               detourFailedRef.current = false;
           } else {
               // If turning ON, and we haven't tried yet, force route check
               if (!detourAppliedRef.current && !detourFailedRef.current) {
-                  controlRef.current.route();
+                  try {
+                    controlRef.current.route();
+                  } catch (e) {
+                    console.warn(e);
+                  }
               }
           }
       }
@@ -655,7 +750,11 @@ const RoutingMachine: React.FC<RoutingProps> = ({ start, end, stations, onRouteF
   useEffect(() => {
      if (controlRef.current) {
          // Refresh route to update red lines or detect new floods
-         controlRef.current.route();
+         try {
+            controlRef.current.route();
+         } catch (e) {
+            console.warn(e);
+         }
      }
   }, [stations]);
 
@@ -699,6 +798,9 @@ const MapComponent: React.FC<MapComponentProps> = ({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       
+      {/* Automatically fix size when container changes (flexbox resizing) */}
+      <MapResizeHandler />
+
       <MapController center={userLocation || (selectedStationId ? null : undefined)} />
       
       <MapClickHandler onMapClick={isNavigating ? undefined : onSetDestination} />

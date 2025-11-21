@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Waves, Search, Bell, Navigation, MapPin, AlertTriangle, ShieldAlert, Crosshair, ArrowRight, Clock, X, Car, RotateCcw, Bike } from 'lucide-react';
+import { Waves, Search, Bell, Navigation, MapPin, AlertTriangle, ShieldAlert, Crosshair, ArrowRight, Car, RotateCcw, Bike, X } from 'lucide-react';
 import DashboardStats from './components/DashboardStats';
 import MapComponent from './components/MapComponent';
 import StationDetailPanel from './components/StationDetailPanel';
@@ -7,11 +8,12 @@ import { MOCK_STATIONS } from './constants';
 import { Station, DashboardStats as StatsType, Status, RouteInfo, SearchResult, VehicleType } from './types';
 import { fetchBlynkData } from './services/blynkService';
 import { searchAddress } from './services/geocodingService';
+import { fetchWeatherData, findNearestWeatherStation } from './services/weatherService';
 
 const App: React.FC = () => {
   const [stations, setStations] = useState<Station[]>(MOCK_STATIONS);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
-  const [stationFilter, setStationFilter] = useState(''); // Filter for station list
+  const [stationFilter, setStationFilter] = useState(''); 
   const [isMobilePanelOpen, setIsMobilePanelOpen] = useState(false);
   
   // Location & Navigation State
@@ -23,7 +25,6 @@ const App: React.FC = () => {
   const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
   const [avoidFloodMode, setAvoidFloodMode] = useState(false);
   
-  // Vehicle Selection
   const [vehicleType, setVehicleType] = useState<VehicleType>(VehicleType.MOTORBIKE);
 
   // Search State
@@ -32,54 +33,79 @@ const App: React.FC = () => {
   const [isSearching, setIsSearching] = useState(false);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Polling Effect for Blynk Data
+  // Polling Effect: Blynk + Fail-Safe Weather
   useEffect(() => {
-    const pollStations = async () => {
-      // Fetch data for all stations with tokens
+    const pollData = async () => {
+      // 1. Fetch Global Weather Data (Live or Mock)
+      const { stations: weatherList, isMock: isWeatherMock } = await fetchWeatherData();
+
+      // 2. Fetch Blynk Data and Merge everything
       const updates = await Promise.all(stations.map(async (station) => {
+        let updatedStation = { ...station };
+
+        // A. Handle Blynk Data
         if (station.blynkToken) {
-          const data = await fetchBlynkData(station.blynkToken);
-          if (data) {
+          const blynkData = await fetchBlynkData(station.blynkToken);
+          if (blynkData) {
             let newStatus = Status.SAFE;
-            if (data.currentLevel >= 20 || data.currentLevel >= data.threshold) {
+            if (blynkData.currentLevel >= 20 || blynkData.currentLevel >= blynkData.threshold) {
               newStatus = Status.DANGER;
-            } else if (data.currentLevel >= 5) {
+            } else if (blynkData.currentLevel >= 5) {
               newStatus = Status.WARNING;
             }
 
             const newHistoryPoint = {
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              level: data.currentLevel
+              level: blynkData.currentLevel
             };
             
             const updatedHistory = [...station.history, newHistoryPoint].slice(-20);
 
-            return {
-              ...station,
-              currentLevel: data.currentLevel,
-              threshold: data.threshold,
-              isAutoWarning: data.isAutoWarning,
+            updatedStation = {
+              ...updatedStation,
+              currentLevel: blynkData.currentLevel,
+              threshold: blynkData.threshold,
+              isAutoWarning: blynkData.isAutoWarning,
               status: newStatus,
               history: updatedHistory,
               lastUpdated: new Date().toISOString()
             };
           }
         }
-        return station;
+
+        // B. Handle Weather Data Matching (Radius 5km)
+        if (weatherList.length > 0) {
+          const match = findNearestWeatherStation(station.lat, station.lng, weatherList);
+          if (match.data) {
+            // Inject the global isMock flag into the station's weather data so UI knows source
+            updatedStation.weatherData = { ...match.data, isMock: isWeatherMock };
+            updatedStation.distanceToWeatherStation = match.distance;
+          } else {
+            updatedStation.weatherData = null;
+            updatedStation.distanceToWeatherStation = undefined;
+          }
+        } else {
+           updatedStation.weatherData = null;
+        }
+
+        return updatedStation;
       }));
 
       setStations(prev => {
-        // Only update if data actually changed to prevent re-renders (simplified check)
-        return JSON.stringify(prev) !== JSON.stringify(updates) ? updates : prev;
+        if (JSON.stringify(prev) !== JSON.stringify(updates)) {
+          return updates;
+        }
+        return prev;
       });
     };
 
-    pollStations();
-    const intervalId = setInterval(pollStations, 5000);
+    pollData();
+    // Poll every 60s for weather/blynk
+    const intervalId = setInterval(pollData, 60000);
     return () => clearInterval(intervalId);
   }, []); 
 
-  // Sync selectedStation with realtime updates from stations array
+  // Sync selectedStation with realtime updates
   useEffect(() => {
     if (selectedStation) {
       const updatedStation = stations.find(s => s.id === selectedStation.id);
@@ -106,7 +132,6 @@ const App: React.FC = () => {
       },
       (error) => {
         console.error("Error getting location", error);
-        // Mock location for demo if fails
         setUserLocation([20.985, 105.795]); 
         setLoadingLocation(false);
       }
@@ -135,10 +160,10 @@ const App: React.FC = () => {
     const lng = parseFloat(result.lon);
     
     setDestination([lat, lng]);
-    setDestinationName(result.display_name.split(',')[0]); // Short name
+    setDestinationName(result.display_name.split(',')[0]); 
     setSearchQuery('');
     setSearchResults([]);
-    setAvoidFloodMode(false); // Reset avoid mode on new search
+    setAvoidFloodMode(false);
     
     if (!isNavigating) {
       setIsNavigating(true);
@@ -168,7 +193,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Stats
   const stats: StatsType = useMemo(() => {
     return {
       activeNodes: stations.length,
@@ -203,7 +227,6 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-2 md:space-x-4">
-          {/* Station Search (Filter) */}
           <div className="hidden md:flex items-center bg-slate-900/50 rounded-lg border border-slate-600 px-3 py-1.5 focus-within:border-blue-500 transition-colors">
              <Search size={16} className="text-slate-400 mr-2" />
              <input 
@@ -244,19 +267,16 @@ const App: React.FC = () => {
 
           <div className="flex-1 bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-1 relative flex flex-col overflow-hidden">
             
-            {/* --- MAP OVERLAY CONTROLS --- */}
+            {/* Map Overlay Controls */}
             <div className="absolute top-2 left-2 right-2 md:top-4 md:left-4 md:right-auto md:w-96 z-[20] flex flex-col gap-3 pointer-events-none">
-               
-               {/* 1. Navigation Input Panel */}
                <div className="bg-white dark:bg-slate-800 rounded-lg shadow-2xl border border-slate-200 dark:border-slate-600 pointer-events-auto overflow-hidden">
                  {isNavigating ? (
                    <div className="p-3 space-y-2 animate-in slide-in-from-top-2">
-                      {/* Vehicle Selection */}
                       <div className="flex p-1 bg-slate-100 dark:bg-slate-700 rounded-lg mb-2">
                          <button 
                            onClick={() => {
                              setVehicleType(VehicleType.MOTORBIKE);
-                             setAvoidFloodMode(false); // Reset to trigger recalc check
+                             setAvoidFloodMode(false);
                            }}
                            className={`flex-1 flex items-center justify-center gap-2 py-1.5 text-xs font-bold rounded-md transition-colors ${vehicleType === VehicleType.MOTORBIKE ? 'bg-white dark:bg-slate-600 shadow text-blue-600 dark:text-white' : 'text-slate-500 hover:text-slate-700'}`}
                          >
@@ -272,8 +292,6 @@ const App: React.FC = () => {
                            <Car size={14} /> Car
                          </button>
                       </div>
-
-                      {/* FROM */}
                       <div className="flex items-center gap-3">
                         <div className="w-4 flex flex-col items-center gap-1">
                            <div className="w-3 h-3 rounded-full border-2 border-blue-500"></div>
@@ -291,8 +309,6 @@ const App: React.FC = () => {
                            </button>
                         </div>
                       </div>
-
-                      {/* TO */}
                       <div className="flex items-center gap-3">
                         <div className="w-4 flex justify-center">
                            <MapPin size={16} className="text-red-500 fill-red-500" />
@@ -318,8 +334,6 @@ const App: React.FC = () => {
                            )}
                         </div>
                       </div>
-
-                      {/* Search Dropdown */}
                       {searchResults.length > 0 && (
                         <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 max-h-60 overflow-y-auto z-30">
                           {searchResults.map((result) => (
@@ -336,11 +350,8 @@ const App: React.FC = () => {
                       )}
                    </div>
                  ) : (
-                   /* Simple Search Bar (Initial State) */
                    <div className="flex items-center p-1">
-                     <div className="p-2 text-slate-400">
-                       <Search size={20} />
-                     </div>
+                     <div className="p-2 text-slate-400"><Search size={20} /></div>
                      <input 
                        type="text"
                        placeholder="Search destination..."
@@ -358,8 +369,6 @@ const App: React.FC = () => {
                      </button>
                    </div>
                  )}
-                 
-                 {/* Dropdown for Simple Search Bar */}
                  {!isNavigating && searchResults.length > 0 && (
                     <div className="border-t border-slate-200 dark:border-slate-700 max-h-60 overflow-y-auto bg-white dark:bg-slate-800">
                       {searchResults.map((result) => (
@@ -375,8 +384,6 @@ const App: React.FC = () => {
                     </div>
                  )}
                </div>
-
-               {/* Back Button when Navigating */}
                {isNavigating && (
                  <button 
                    onClick={handleClearNavigation}
@@ -387,46 +394,39 @@ const App: React.FC = () => {
                )}
             </div>
 
-            {/* 2. Bottom Sheet / Route Summary Card */}
+            {/* Route Summary */}
             {isNavigating && routeInfo && (
                <div className="absolute bottom-4 left-2 right-2 md:left-auto md:right-4 md:w-96 z-[20] animate-in slide-in-from-bottom-10 pointer-events-auto">
                   <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col max-h-[40vh] overflow-y-auto">
-                     
-                     {/* Route Status Banner */}
-                     <div className={`px-4 py-2 flex items-center gap-2 ${routeInfo.isFlooded ? 'bg-red-500 text-white' : 'bg-blue-600 text-white'}`}>
+                     <div className={`px-4 py-2 flex items-center gap-2 ${routeInfo.isFlooded ? 'bg-red-500 text-white' : routeInfo.isDetour ? 'bg-emerald-500 text-white' : 'bg-blue-600 text-white'}`}>
                         {routeInfo.isFlooded ? <AlertTriangle size={18} fill="white" /> : <ShieldAlert size={18} />}
                         <span className="font-bold text-sm uppercase">
-                           {routeInfo.isFlooded ? 'Flood Warning: Route Unsafe' : 'Route Clear & Safe'}
+                           {routeInfo.isFlooded ? 'Flood Warning: Route Unsafe' : routeInfo.isDetour ? 'Safe Detour Applied' : 'Route Clear & Safe'}
                         </span>
                      </div>
-
                      <div className="p-4">
                         <div className="flex justify-between items-end mb-4">
                            <div>
                               <div className="flex items-baseline gap-1">
-                                <span className={`text-3xl font-black ${routeInfo.isFlooded ? 'text-red-500' : 'text-blue-500'}`}>
+                                <span className={`text-3xl font-black ${routeInfo.isFlooded ? 'text-red-500' : routeInfo.isDetour ? 'text-emerald-500' : 'text-blue-500'}`}>
                                   {Math.ceil(routeInfo.duration / 60)}
                                 </span>
                                 <span className="text-sm font-bold text-slate-500">min</span>
                               </div>
                               <div className="text-slate-500 text-sm font-medium">
-                                {(routeInfo.distance / 1000).toFixed(1)} km • Fastest route
+                                {(routeInfo.distance / 1000).toFixed(1)} km • {routeInfo.isDetour ? 'Detour route' : 'Fastest route'}
                               </div>
                            </div>
                            <div className="bg-slate-100 dark:bg-slate-700 p-2 rounded-lg text-slate-500">
                              {vehicleType === VehicleType.CAR ? <Car size={24} /> : <Bike size={24} />}
                            </div>
                         </div>
-
                         {routeInfo.isFlooded && (
                           <div className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900 rounded-lg p-3 mb-4">
                             <p className="text-xs font-bold text-red-600 dark:text-red-400 mb-1">High water levels detected near:</p>
                             <ul className="text-xs text-red-800 dark:text-red-300 space-y-1">
                               {routeInfo.affectedStations.map(s => (
-                                <li key={s} className="flex items-center gap-1">
-                                  <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
-                                  {s}
-                                </li>
+                                <li key={s} className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>{s}</li>
                               ))}
                             </ul>
                             {!avoidFloodMode && (
@@ -437,14 +437,9 @@ const App: React.FC = () => {
                                 <RotateCcw size={12} /> Suggest Safer Route
                               </button>
                             )}
-                            {avoidFloodMode && (
-                              <div className="mt-2 text-xs text-slate-500 italic text-center">
-                                Calculating detour around flood...
-                              </div>
-                            )}
+                            {avoidFloodMode && <div className="mt-2 text-xs text-slate-500 italic text-center">Calculating detour around flood...</div>}
                           </div>
                         )}
-
                         <button className={`w-full py-3 rounded-lg font-bold text-white shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2 ${routeInfo.isFlooded && !avoidFloodMode ? 'bg-slate-500 cursor-not-allowed opacity-80' : 'bg-blue-600 hover:bg-blue-500'}`}>
                            <Navigation size={18} className="fill-current" />
                            {avoidFloodMode ? 'Navigate Detour' : 'Start Navigation'}
@@ -453,7 +448,7 @@ const App: React.FC = () => {
                   </div>
                </div>
             )}
-            
+
             {/* GPS Button */}
             <div className={`absolute bottom-8 right-4 md:bottom-8 md:right-[400px] z-[10] transition-all duration-300`}>
                <button 
@@ -495,17 +490,18 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Right: Detail Panel (Desktop) */}
+        {/* Right: Detail Panel */}
         {selectedStation && (
           <div className="hidden lg:block w-[400px] animate-in slide-in-from-right-10 duration-300 h-full shrink-0">
             <StationDetailPanel 
               station={selectedStation} 
-              onClose={() => setSelectedStation(null)} 
+              onClose={() => setSelectedStation(null)}
+              nearestWeather={selectedStation.weatherData}
             />
           </div>
         )}
 
-        {/* Mobile Detail Panel Overlay (Full Screen) */}
+        {/* Mobile Panel */}
         {selectedStation && isMobilePanelOpen && (
           <div className="lg:hidden fixed inset-0 z-50 bg-slate-900 animate-in slide-in-from-bottom duration-300 flex flex-col">
              <div className="flex-1 overflow-hidden">
@@ -515,13 +511,12 @@ const App: React.FC = () => {
                     setIsMobilePanelOpen(false);
                     setTimeout(() => setSelectedStation(null), 300);
                   }}
+                  nearestWeather={selectedStation.weatherData}
                 />
              </div>
           </div>
         )}
-
       </main>
-
     </div>
   );
 };

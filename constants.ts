@@ -30,10 +30,10 @@ export const MOCK_STATIONS: Station[] = [
   },
   {
     id: 'NODE-02',
-    name: 'Pham Hung Street',
-    location: 'Nam Tu Liem District',
-    lat: 21.016,
-    lng: 105.783,
+    name: 'Nguyen Chi Thanh',
+    location: 'Dong Da District', // 3-89 Đ. Nguyễn Chí Thanh
+    lat: 21.020927,
+    lng: 105.808918,
     currentLevel: 18,
     threshold: 20,
     status: Status.WARNING,
@@ -48,10 +48,10 @@ export const MOCK_STATIONS: Station[] = [
   },
   {
     id: 'NODE-03',
-    name: 'Thai Ha Street',
-    location: 'Dong Da District',
-    lat: 21.012,
-    lng: 105.823,
+    name: 'Chua Boc Street',
+    location: 'Dong Da District', // 231-205 P. Chùa Bộc
+    lat: 21.008443,
+    lng: 105.826367,
     currentLevel: 2,
     threshold: 30,
     status: Status.SAFE,
@@ -66,10 +66,10 @@ export const MOCK_STATIONS: Station[] = [
   },
   {
     id: 'NODE-04',
-    name: 'Linh Dam Peninsula',
-    location: 'Hoang Mai District',
-    lat: 20.964,
-    lng: 105.830,
+    name: '190-208 Van Phuc Street',
+    location: 'Ha Dong District', // 190-208 Đường Vạn Phúc
+    lat: 20.983064,
+    lng: 105.770016,
     currentLevel: 45,
     threshold: 30,
     status: Status.DANGER,
@@ -84,10 +84,10 @@ export const MOCK_STATIONS: Station[] = [
   },
   {
     id: 'NODE-05',
-    name: 'Xuan Thuy Road',
-    location: 'Cau Giay District',
-    lat: 21.036,
-    lng: 105.793,
+    name: 'Nguyen Xien Road',
+    location: 'Thanh Xuan District', // Nguyễn Xiển
+    lat: 20.986845,
+    lng: 105.806676,
     currentLevel: 12,
     threshold: 25,
     status: Status.WARNING,
