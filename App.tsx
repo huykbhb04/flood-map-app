@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Waves, Search, Bell, Navigation, MapPin, AlertTriangle, ShieldAlert, Crosshair, ArrowRight, Clock, X, Car, RotateCcw, Bike } from 'lucide-react';
 import DashboardStats from './components/DashboardStats';
@@ -192,18 +191,18 @@ const App: React.FC = () => {
   return (
     <div className="h-screen w-full bg-slate-900 flex flex-col overflow-hidden font-sans">
       {/* Navbar */}
-      <header className="h-16 bg-slate-800 border-b border-slate-700 flex items-center justify-between px-4 md:px-6 z-30 shadow-md">
+      <header className="h-16 bg-slate-800 border-b border-slate-700 flex items-center justify-between px-4 md:px-6 z-30 shadow-md shrink-0">
         <div className="flex items-center space-x-3">
           <div className="bg-blue-600 p-2 rounded-lg shadow-lg shadow-blue-900/20">
-            <Waves className="text-white h-6 w-6" />
+            <Waves className="text-white h-5 w-5 md:h-6 md:w-6" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">FloodGuard IoT</h1>
-            <p className="text-[10px] text-slate-400 uppercase tracking-widest font-medium">Real-time Monitoring System</p>
+            <h1 className="text-lg md:text-xl font-bold text-white tracking-tight">FloodGuard IoT</h1>
+            <p className="text-[8px] md:text-[10px] text-slate-400 uppercase tracking-widest font-medium">Real-time Monitoring System</p>
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center space-x-2 md:space-x-4">
           {/* Station Search (Filter) */}
           <div className="hidden md:flex items-center bg-slate-900/50 rounded-lg border border-slate-600 px-3 py-1.5 focus-within:border-blue-500 transition-colors">
              <Search size={16} className="text-slate-400 mr-2" />
@@ -236,18 +235,17 @@ const App: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 flex overflow-hidden p-4 gap-4 relative">
+      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden p-2 md:p-4 gap-2 md:gap-4 relative">
         
         {/* Left: Dashboard & Map */}
-        {/* Fixed: Removed mr-[350px] which caused the large gap. Flexbox will handle the spacing. */}
-        <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${selectedStation ? 'hidden lg:flex' : ''}`}>
+        <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300`}>
           
           {!isNavigating && <DashboardStats stats={stats} />}
 
           <div className="flex-1 bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-1 relative flex flex-col overflow-hidden">
             
             {/* --- MAP OVERLAY CONTROLS --- */}
-            <div className="absolute top-4 left-4 z-[20] flex flex-col gap-3 w-full max-w-md pointer-events-none">
+            <div className="absolute top-2 left-2 right-2 md:top-4 md:left-4 md:right-auto md:w-96 z-[20] flex flex-col gap-3 pointer-events-none">
                
                {/* 1. Navigation Input Panel */}
                <div className="bg-white dark:bg-slate-800 rounded-lg shadow-2xl border border-slate-200 dark:border-slate-600 pointer-events-auto overflow-hidden">
@@ -391,8 +389,8 @@ const App: React.FC = () => {
 
             {/* 2. Bottom Sheet / Route Summary Card */}
             {isNavigating && routeInfo && (
-               <div className="absolute bottom-6 left-4 right-4 md:left-auto md:right-4 md:w-96 z-[20] animate-in slide-in-from-bottom-10">
-                  <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col">
+               <div className="absolute bottom-4 left-2 right-2 md:left-auto md:right-4 md:w-96 z-[20] animate-in slide-in-from-bottom-10 pointer-events-auto">
+                  <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col max-h-[40vh] overflow-y-auto">
                      
                      {/* Route Status Banner */}
                      <div className={`px-4 py-2 flex items-center gap-2 ${routeInfo.isFlooded ? 'bg-red-500 text-white' : 'bg-blue-600 text-white'}`}>
@@ -457,7 +455,7 @@ const App: React.FC = () => {
             )}
             
             {/* GPS Button */}
-            <div className="absolute bottom-8 right-4 md:bottom-8 md:right-[400px] z-[10]">
+            <div className={`absolute bottom-8 right-4 md:bottom-8 md:right-[400px] z-[10] transition-all duration-300`}>
                <button 
                   onClick={handleLocateUser}
                   disabled={loadingLocation}
@@ -507,15 +505,15 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Mobile Overlay Panel */}
+        {/* Mobile Detail Panel Overlay (Full Screen) */}
         {selectedStation && isMobilePanelOpen && (
-          <div className="lg:hidden fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm">
-             <div className="w-full max-w-md h-full bg-slate-900 shadow-2xl animate-in slide-in-from-right duration-300">
+          <div className="lg:hidden fixed inset-0 z-50 bg-slate-900 animate-in slide-in-from-bottom duration-300 flex flex-col">
+             <div className="flex-1 overflow-hidden">
                 <StationDetailPanel 
                   station={selectedStation} 
                   onClose={() => {
-                    setSelectedStation(null);
                     setIsMobilePanelOpen(false);
+                    setTimeout(() => setSelectedStation(null), 300);
                   }}
                 />
              </div>

@@ -51,7 +51,7 @@ const StationDetailPanel: React.FC<Props> = ({ station, onClose }) => {
   return (
     <div className="h-full flex flex-col bg-slate-800 rounded-lg shadow-xl border border-slate-700 overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-slate-700 flex justify-between items-start bg-slate-900/50">
+      <div className="p-3 md:p-4 border-b border-slate-700 flex justify-between items-start bg-slate-900/50">
         <div>
           <div className="flex items-center space-x-2 mb-1">
             <span className="text-xs font-mono text-slate-500 uppercase tracking-widest">Station ID: {station.id}</span>
@@ -70,12 +70,12 @@ const StationDetailPanel: React.FC<Props> = ({ station, onClose }) => {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-4 md:space-y-6 custom-scrollbar">
         
         {/* Main Metrics */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-3 md:gap-4">
           {/* Water Level */}
-          <div className="bg-slate-700/50 p-4 rounded-lg border border-slate-600 text-center flex flex-col justify-center relative overflow-hidden">
+          <div className="bg-slate-700/50 p-3 md:p-4 rounded-lg border border-slate-600 text-center flex flex-col justify-center relative overflow-hidden">
             <div className="absolute inset-0 bg-blue-500/5" style={{ height: `${Math.min(100, station.currentLevel)}%`, bottom: 0, top: 'auto', transition: 'height 0.5s' }}></div>
             <div className="text-slate-400 text-xs mb-1 flex items-center justify-center gap-1 z-10">
                <Droplets size={12} /> Water Level
@@ -86,7 +86,7 @@ const StationDetailPanel: React.FC<Props> = ({ station, onClose }) => {
           </div>
 
           {/* Threshold Display (Read Only) */}
-          <div className="bg-slate-700/50 p-4 rounded-lg border border-slate-600 text-center flex flex-col justify-center relative">
+          <div className="bg-slate-700/50 p-3 md:p-4 rounded-lg border border-slate-600 text-center flex flex-col justify-center relative">
             <div className="text-slate-400 text-xs mb-1 flex items-center justify-center gap-1">
               <AlertOctagon size={12} /> Danger Threshold
             </div>
@@ -109,7 +109,7 @@ const StationDetailPanel: React.FC<Props> = ({ station, onClose }) => {
                </div>
              )}
           </div>
-          <div className="h-48 w-full bg-slate-900/50 rounded-lg border border-slate-700 p-2">
+          <div className="h-32 md:h-48 w-full bg-slate-900/50 rounded-lg border border-slate-700 p-2">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={station.history}>
                 <defs>
