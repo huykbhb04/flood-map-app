@@ -1,0 +1,7 @@
+{
+  "name": "FloodGuard IoT",
+  "description": "Real-time flood monitoring dashboard integrating IoT sensor data with AI-powered risk analysis and geospatial visualization.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
